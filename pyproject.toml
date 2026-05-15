@@ -17,6 +17,7 @@ dependencies = [
     "transformers>=4.51.0",
     "flash-attn",
     "xxhash",
+    "psutil>=7.2.2",
 ]
 
 [project.urls]
@@ -25,3 +26,21 @@ Homepage="https://github.com/GeeeekExplorer/nano-vllm"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["nanovllm*"]
+
+[tool.pyright]
+# torch re-exports many symbols dynamically from torch._C._VariableFunctions
+# (zeros, tensor, empty, arange, ones, randn, cat, stack, ...). basedpyright/
+# cursorpyright cannot see the runtime __all__.extend(...) and flags every call
+# site as reportPrivateImportUsage. Silence that one rule project-wide.
+reportPrivateImportUsage = "none"
+
+[tool.uv]
+no-build-isolation-package = ["flash-attn"]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
