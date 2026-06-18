@@ -1,9 +1,15 @@
 from collections import deque
-
+from dataclasses import dataclass
 from nanovllm.config import Config
 from nanovllm.engine.sequence import Sequence, SequenceStatus
-from nanovllm.engine.block_manager import BlockManager
+from nanovllm.engine.block_manager import SimpleCPUCacheBlockManager
 
+@dataclass
+class SchedulerOutput:
+    seqs: list[Sequence]
+    is_prefill: bool
+    move_cpu_to_gpu: list[tuple[int, int]] | None = None
+    move_gpu_to_cpu: list[tuple[int, int]] | None = None
 
 class Scheduler:
 
@@ -12,7 +18,7 @@ class Scheduler:
         self.max_num_batched_tokens = config.max_num_batched_tokens
         self.eos = config.eos
         self.block_size = config.kvcache_block_size
-        self.block_manager = BlockManager(config.num_kvcache_blocks, config.kvcache_block_size)
+        self.block_manager = SimpleCPUCacheBlockManager(config)
         self.waiting: deque[Sequence] = deque()
         self.running: deque[Sequence] = deque()
 
@@ -22,7 +28,7 @@ class Scheduler:
     def add(self, seq: Sequence):
         self.waiting.append(seq)
 
-    def schedule(self) -> tuple[list[Sequence], bool]:
+    def schedule(self) -> SchedulerOutput:
         scheduled_seqs = []
         num_batched_tokens = 0
 
@@ -43,6 +49,7 @@ class Scheduler:
                 break
             if not seq.block_table:
                 self.block_manager.allocate(seq, num_cached_blocks)
+                num_tokens = seq.num_tokens - seq.num_cached_tokens
             seq.num_scheduled_tokens = min(num_tokens, remaining)
             num_batched_tokens += seq.num_scheduled_tokens
             if seq.num_cached_tokens + seq.num_scheduled_tokens == seq.num_tokens:
@@ -52,7 +59,7 @@ class Scheduler:
             scheduled_seqs.append(seq)
 
         if scheduled_seqs:
-            return scheduled_seqs, True
+            return SchedulerOutput(scheduled_seqs, True, self.block_manager.move_cpu_to_gpu, self.block_manager.move_gpu_to_cpu)
 
         # decode
         while self.running and len(scheduled_seqs) < self.max_num_seqs:
@@ -70,7 +77,7 @@ class Scheduler:
                 scheduled_seqs.append(seq)
         assert scheduled_seqs
         self.running.extendleft(reversed(scheduled_seqs))
-        return scheduled_seqs, False
+        return SchedulerOutput(scheduled_seqs, False, self.block_manager.move_cpu_to_gpu, self.block_manager.move_gpu_to_cpu)
 
     def preempt(self, seq: Sequence):
         seq.status = SequenceStatus.WAITING
@@ -79,6 +86,8 @@ class Scheduler:
         self.waiting.appendleft(seq)
 
     def postprocess(self, seqs: list[Sequence], token_ids: list[int], is_prefill: bool):
+        self.block_manager.move_cpu_to_gpu = []
+        self.block_manager.move_gpu_to_cpu = []
         for seq, token_id in zip(seqs, token_ids):
             self.block_manager.hash_blocks(seq)
             seq.num_cached_tokens += seq.num_scheduled_tokens

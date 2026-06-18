@@ -10,9 +10,11 @@ from nanovllm.models.qwen3 import Qwen3ForCausalLM
 from nanovllm.layers.sampler import Sampler
 from nanovllm.utils.context import set_context, get_context, reset_context
 from nanovllm.utils.loader import load_model
-
+from nanovllm.engine.simple_cpu_cache import SimpleCPUCacheRunner
+from nanovllm.engine.scheduler import SchedulerOutput
 
 class ModelRunner:
+    kv_cache_runner: SimpleCPUCacheRunner
 
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):
         self.config = config
@@ -97,28 +99,11 @@ class ModelRunner:
         seqs = [Sequence([0] * seq_len) for _ in range(num_seqs)]
         for seq in seqs:
             seq.num_scheduled_tokens = seq_len
-        self.run(seqs, True)
-        torch.cuda.empty_cache()
-
+        self.run(SchedulerOutput(seqs, True))
+        torch.cuda.empty_cache()        
+            
     def allocate_kv_cache(self):
-        config = self.config
-        hf_config = config.hf_config
-        free, total = torch.cuda.mem_get_info()
-        used = total - free
-        peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
-        current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
-        num_kv_heads = hf_config.num_key_value_heads // self.world_size
-        head_dim = getattr(hf_config, "head_dim", hf_config.hidden_size // hf_config.num_attention_heads)
-        block_bytes = 2 * hf_config.num_hidden_layers * self.block_size * num_kv_heads * head_dim * hf_config.dtype.itemsize
-        config.num_kvcache_blocks = int(total * config.gpu_memory_utilization - used - peak + current) // block_bytes
-        assert config.num_kvcache_blocks > 0
-        self.kv_cache = torch.empty(2, hf_config.num_hidden_layers, config.num_kvcache_blocks, self.block_size, num_kv_heads, head_dim)
-        layer_id = 0
-        for module in self.model.modules():
-            if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
-                module.k_cache = self.kv_cache[0, layer_id]
-                module.v_cache = self.kv_cache[1, layer_id]
-                layer_id += 1
+        self.kv_cache_runner = SimpleCPUCacheRunner(self.config, self.model)
 
     def prepare_block_tables(self, seqs: list[Sequence]):
         max_len = max(len(seq.block_table) for seq in seqs)
@@ -211,9 +196,18 @@ class ModelRunner:
             graph.replay()
             return self.model.compute_logits(graph_vars["outputs"][:bs])
 
-    def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:
+    def run(self, scheduler_output: SchedulerOutput) -> list[int]:
+        move_cpu_to_gpu = scheduler_output.move_cpu_to_gpu or []
+        move_gpu_to_cpu = scheduler_output.move_gpu_to_cpu or []
+        seqs = scheduler_output.seqs
+        is_prefill = scheduler_output.is_prefill
+        event = None
+        if move_cpu_to_gpu or move_gpu_to_cpu:
+            event = self.kv_cache_runner.move(move_cpu_to_gpu, move_gpu_to_cpu)
         input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
+        if event is not None:
+            event.wait()
         logits = self.run_model(input_ids, positions, is_prefill)
         token_ids = self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
         reset_context()
