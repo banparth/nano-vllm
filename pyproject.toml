@@ -33,6 +33,10 @@ include = ["nanovllm*"]
 # cursorpyright cannot see the runtime __all__.extend(...) and flags every call
 # site as reportPrivateImportUsage. Silence that one rule project-wide.
 reportPrivateImportUsage = "none"
+# basedpyright-only rule that demands explicit annotations on every instance
+# attribute unless the class is @final. Too noisy for this codebase where
+# attributes are obvious from their __init__ assignments.
+reportUnannotatedClassAttribute = "none"
 
 [tool.uv]
 no-build-isolation-package = ["flash-attn"]

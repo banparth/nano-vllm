@@ -15,7 +15,7 @@ class Sequence:
     block_size = 256
     counter = count()
 
-    def __init__(self, token_ids: list[int], sampling_params = SamplingParams()):
+    def __init__(self, token_ids: list[int], sampling_params: SamplingParams = SamplingParams()):
         self.seq_id = next(Sequence.counter)
         self.status = SequenceStatus.WAITING
         self.token_ids = copy(token_ids)
@@ -30,7 +30,7 @@ class Sequence:
         self.max_tokens = sampling_params.max_tokens
         self.ignore_eos = sampling_params.ignore_eos
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.num_tokens
 
     def __getitem__(self, key):
@@ -53,7 +53,7 @@ class Sequence:
         return self.token_ids[self.num_prompt_tokens:]
 
     @property
-    def num_blocks(self):
+    def num_blocks(self) -> int:
         return (self.num_tokens + self.block_size - 1) // self.block_size
 
     @property
