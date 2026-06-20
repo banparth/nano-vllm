@@ -1,0 +1,42 @@
+# clangd config for the C++/CUDA sources under csrc/.
+#
+# Include paths come from compile_commands.json (CMAKE_EXPORT_COMPILE_COMMANDS,
+# symlinked at the repo root). The .cu compile command is an nvcc invocation, so
+# we strip nvcc-only flags that clang can't parse.
+CompileFlags:
+  CompilationDatabase: .
+  Remove:
+    - -forward-unknown-to-host-compiler
+    - -gencode*
+    - arch=*
+    - --generate-code*
+    - -Xcudafe*
+    - --diag_suppress*
+    - -Xcompiler*
+    - -Xfatbin*
+    - --expt-relaxed-constexpr
+    - --expt-extended-lambda
+    - --options-file
+    - -ccbin*
+    - --threads*
+    - -rdc=*
+    - -x
+
+---
+# Parse .cu/.cuh as C++ for IntelliSense. clang-18's CUDA frontend mis-resolves
+# libtorch's Tensor API (breaking go-to-definition for torch::empty_like,
+# data_ptr, etc.), whereas plain C++ parsing resolves it cleanly. A force-included
+# shim defines the CUDA keywords/builtins so kernel bodies still parse; nvcc never
+# sees the shim (guarded by __CUDACC__).
+If:
+  PathMatch: [.*\.cu, .*\.cuh]
+CompileFlags:
+  Add:
+    - -xc++
+    - -include
+    - /home/parth/nano-vllm/csrc/core/clangd_cuda_shim.h
+Diagnostics:
+  # The `kernel<<<grid, block>>>(...)` launch isn't valid C++ grammar, so the
+  # C++ parse flags it. nvcc validates launches at build time; hide just this.
+  Suppress:
+    - expected_expression

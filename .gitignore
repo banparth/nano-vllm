@@ -1,3 +1,6 @@
+# nano-vllm benchmark suite: run outputs (goldens under tests/goldens/ ARE tracked)
+results/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -193,3 +196,7 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# Generated C++ compile database (symlink into build/) for clangd / IDEs
+compile_commands.json
+.cache/clangd/

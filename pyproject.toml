@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.10", "torch>=2.4.0", "wheel"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "nano-vllm"
@@ -23,9 +23,20 @@ dependencies = [
 [project.urls]
 Homepage="https://github.com/GeeeekExplorer/nano-vllm"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["nanovllm*"]
+[tool.scikit-build]
+cmake.version = ">=3.26"
+cmake.build-type = "Release"
+# Cache the CMake build tree per wheel tag for fast incremental rebuilds.
+build-dir = "build/{wheel_tag}"
+# Ship the pure-Python package; CMake installs nanovllm/_C*.so alongside it.
+wheel.packages = ["nanovllm"]
+# Recompile the extension on import when csrc/ or CMakeLists.txt change.
+editable.rebuild = true
+editable.mode = "redirect"
+minimum-version = "build-system.requires"
+
+[tool.scikit-build.cmake.define]
+CMAKE_CUDA_ARCHITECTURES = "90"
 
 [tool.pyright]
 # torch re-exports many symbols dynamically from torch._C._VariableFunctions
@@ -39,7 +50,7 @@ reportPrivateImportUsage = "none"
 reportUnannotatedClassAttribute = "none"
 
 [tool.uv]
-no-build-isolation-package = ["flash-attn"]
+no-build-isolation-package = ["flash-attn", "nano-vllm"]
 
 [[tool.uv.index]]
 name = "pytorch-cu130"
