@@ -18,19 +18,22 @@ build + registration pipeline end to end. Real kernels follow the same recipe.
 csrc/
   core/
     registration.h        # PyInit macro (shared infra; no kernels here)
-    clangd_cuda_shim.h    # IDE-only: lets clangd parse .cu as C++ (see below)
   ops.h                   # central declarations of every host-side entry point
-  elementwise/            # a category dir: one file per op
-    vector_add.cu
+  elementwise/            # a category dir; each op is a 3-file set:
+    vector_add.cu         #   __global__ kernel + typed launcher (torch-free)
+    vector_add.cuh        #   launcher declaration shared by the .cu and .cpp
+    vector_add.cpp        #   torch::Tensor glue (checks, dispatch, output)
   torch_bindings.cpp      # the single place that registers every op
   README.md
 ```
 
 Kernels are grouped by category directory (`elementwise/`, and later
-`attention/`, `gemm/`, `normalization/`, ...). `core/` holds shared
+`attention/`, `gemm/`, `normalization/`, ...). Each op is split so every file
+parses cleanly in its IDE language mode (see "Editor" below): the torch-free
+kernel + launcher in `.cu` (native CUDA), the `torch::Tensor` glue in `.cpp`
+(C++), tied together by a tiny `.cuh` launcher declaration. `core/` holds shared
 infrastructure, `ops.h` is the one header the bindings include, and CMake
-auto-discovers every `.cu`/`.cpp` under `csrc/`, so new files just need to be
-declared and registered.
+auto-discovers every `.cu`/`.cpp` under `csrc/`.
 
 ## What changed, and why
 
@@ -44,9 +47,12 @@ declared and registered.
   auto-discovers and compiles every `csrc/**/*.cu|*.cpp` into `nanovllm/_C*.so`.
   Why: single source of truth for the build; globbing means new kernels need no
   CMake edit.
-- `csrc/elementwise/vector_add.cu` (new) - the CUDA kernel and its host launcher,
-  filed under its category. Why: the worked example; launches on the current
-  stream so it is CUDA-graph safe.
+- `csrc/elementwise/vector_add.{cu,cuh,cpp}` (new) - the worked example, split
+  three ways: `.cu` holds the `__global__` kernel + a torch-free typed launcher
+  (on the current stream, so it is CUDA-graph safe) with explicit instantiations;
+  `.cuh` declares the launcher; `.cpp` holds the `torch::Tensor` op that dispatches
+  by dtype and calls the launcher. Why: each file parses cleanly in its IDE mode
+  (CUDA vs C++) and it separates kernel from glue.
 - `csrc/ops.h` (new) - central declarations of every kernel's host entry point.
   Why: one header for `torch_bindings.cpp` to include; keeps declarations in one
   place as the kernel set grows.
@@ -72,9 +78,10 @@ declared and registered.
   with autograd, `torch.compile`, and `torch.export`.
 
 ```
-csrc/<category>/<op>.cu  -- kernel + host launcher (declared in csrc/ops.h)
+csrc/<category>/<op>.cu   -- __global__ kernel + typed launcher (torch-free)
+csrc/<category>/<op>.cpp  -- torch::Tensor op -> AT_DISPATCH -> launcher (in ops.h)
         |
-csrc/torch_bindings.cpp  -- TORCH_LIBRARY schema + CUDA impl + REGISTER_EXTENSION
+csrc/torch_bindings.cpp   -- TORCH_LIBRARY schema + CUDA impl + REGISTER_EXTENSION
         |  (CMake auto-globs + builds ->)
 nanovllm/_C.so  -- import runs the registration
         |
@@ -114,35 +121,39 @@ C++/CUDA navigation uses clangd (the `vscode-clangd` extension):
 
 - `CMakeLists.txt` emits `compile_commands.json` (`CMAKE_EXPORT_COMPILE_COMMANDS`),
   symlinked at the repo root so clangd picks up the torch/CUDA/Python include paths.
-- `.clangd` strips nvcc-only flags clang can't parse, and parses `.cu`/`.cuh` as
-  C++ (`-xc++`) so libtorch's API resolves for go-to-definition. clang's CUDA
-  frontend mis-resolves torch 2.12's headers (`torch::empty_like`, `data_ptr`, ...);
-  plain C++ parsing resolves them cleanly.
-- `core/clangd_cuda_shim.h` is force-included by clangd only (guarded by
-  `__CUDACC__`, so nvcc ignores it) to define the CUDA keywords/builtins
-  (`__global__`, `threadIdx`, ...) used in kernel bodies.
+- `.clangd` strips nvcc-only flags clang can't parse and points clangd at the CUDA
+  toolkit. `.cu` files parse in clangd's native CUDA mode, so `<<<...>>>`,
+  `__global__`, and `threadIdx` resolve.
 - `.vscode/settings.json` sets `clangd.path` to the installed clangd binary.
 
-Caveat: a launch `kernel<<<grid, block>>>(...)` isn't valid C++ grammar, so that
-one diagnostic (`expected_expression`) is suppressed in `.clangd`; nvcc validates
-launches at build time. After editing build flags, run "clangd: Restart language
-server" if navigation looks stale.
+Why the .cu/.cpp split matters here: clang's CUDA frontend mis-resolves libtorch's
+Tensor API (`torch::empty_like`, `data_ptr`, ...), while plain C++ mode can't parse
+the `<<<...>>>` launch grammar. Keeping the kernel torch-free in `.cu` and the
+`torch::Tensor` glue in `.cpp` lets each file parse perfectly in its own mode - no
+shims, no suppressed diagnostics. After editing build flags, run
+"clangd: Restart language server" if navigation looks stale.
 
 ## How to add a new kernel
 
-1. Write `csrc/<category>/<op>.cu` (e.g. `normalization/rms_norm.cu`): the kernel
-   plus a host launcher that takes/returns `torch::Tensor`, and `#include "ops.h"`.
-   Launch on `at::cuda::getCurrentCUDAStream()` and do no host sync / `.item()` /
-   out-of-pool allocation (keeps it CUDA-graph safe).
-2. Declare the host function in `csrc/ops.h`, under its category comment.
-3. In `csrc/torch_bindings.cpp`, add a `m.def("<op>(...) -> ...")` schema in the
+Each op is a small 3-file set under a category dir (`csrc/<category>/`):
+
+1. `<op>.cu` - the `__global__` kernel + a torch-free `<op>_launch<scalar_t>(...)`
+   taking raw pointers + a `cudaStream_t`, launched on the current stream (no host
+   sync / `.item()` / out-of-pool alloc, so it stays CUDA-graph safe). Add explicit
+   template instantiations for the dtypes you dispatch.
+2. `<op>.cuh` - declare `template <typename scalar_t> void <op>_launch(...)`.
+3. `<op>.cpp` - the `torch::Tensor <op>(...)` host op: validate inputs, allocate the
+   output, take `at::cuda::getCurrentCUDAStream()`, and `AT_DISPATCH_*` to call the
+   launcher. `#include "ops.h"`.
+4. Declare the host op in `csrc/ops.h`, under its category comment.
+5. In `csrc/torch_bindings.cpp`, add a `m.def("<op>(...) -> ...")` schema in the
    `TORCH_LIBRARY` block and a `m.impl("<op>", &nanovllm::<op>)` in the
    `TORCH_LIBRARY_IMPL(nanovllm, CUDA, m)` block. Mark mutated args with `Tensor(a!)`.
-4. No CMake edit needed - sources are auto-discovered. (If an editable rebuild
+6. No CMake edit needed - sources are auto-discovered. (If an editable rebuild
    doesn't pick up a brand-new file, re-run the install once.)
-5. In `nanovllm/_custom_ops.py`, add a `@torch.library.register_fake("nanovllm::<op>")`
-   (return output metadata only, no compute) and a thin Python wrapper.
-6. Add a test: parity vs a reference, `torch.library.opcheck`, and a
+7. In `nanovllm/_custom_ops.py`, add a `@torch.library.register_fake("nanovllm::<op>")`
+   (output metadata only, no compute) and a thin Python wrapper.
+8. Add a test: parity vs a reference, `torch.library.opcheck`, and a
    `torch.compile(fullgraph=True)` check.
 
 ## Constraints: `torch.compile` + CUDA graphs
