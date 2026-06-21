@@ -5,6 +5,7 @@ import triton.language as tl
 
 from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
 from nanovllm.utils.context import get_context
+from nanovllm.engine.breakable_cuda_graph.breakable_cuda_graph import eager_on_graph
 
 
 @triton.jit
@@ -56,6 +57,14 @@ class Attention(nn.Module):
         self.num_kv_heads = num_kv_heads
         self.k_cache = self.v_cache = torch.tensor([])
 
+    @eager_on_graph()
+    def _attn_decode(self, q: torch.Tensor):
+        context = get_context()
+        o = flash_attn_with_kvcache(q.unsqueeze(1), self.k_cache, self.v_cache,
+                                    cache_seqlens=context.context_lens, block_table=context.block_tables,
+                                    softmax_scale=self.scale, causal=True)
+        return o
+
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         context = get_context()
         k_cache, v_cache = self.k_cache, self.v_cache
@@ -68,8 +77,7 @@ class Attention(nn.Module):
                                        max_seqlen_q=context.max_seqlen_q, cu_seqlens_q=context.cu_seqlens_q,
                                        max_seqlen_k=context.max_seqlen_k, cu_seqlens_k=context.cu_seqlens_k,
                                        softmax_scale=self.scale, causal=True, block_table=context.block_tables)
-        else:    # decode
-            o = flash_attn_with_kvcache(q.unsqueeze(1), k_cache, v_cache,
-                                        cache_seqlens=context.context_lens, block_table=context.block_tables, 
-                                        softmax_scale=self.scale, causal=True)
-        return o
+            return o
+        # decode: one code path. @eager_on_graph turns _attn_decode into a break
+        # point during a breakable capture, and is a no-op everywhere else.
+        return self._attn_decode(q)

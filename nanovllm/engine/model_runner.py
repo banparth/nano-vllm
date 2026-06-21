@@ -10,6 +10,7 @@ from nanovllm.models.qwen3 import Qwen3ForCausalLM
 from nanovllm.layers.sampler import Sampler
 from nanovllm.utils.context import set_context, get_context, reset_context
 from nanovllm.utils.loader import load_model
+from nanovllm.engine.breakable_cuda_graph.breakable_cuda_graph import BreakableCUDAGraph, BreakableCUDAGraphCapture
 
 
 class ModelRunner:
@@ -19,6 +20,7 @@ class ModelRunner:
         hf_config = config.hf_config
         self.block_size = config.kvcache_block_size
         self.enforce_eager = config.enforce_eager
+        self.use_breakable = config.use_breakable_cudagraph and not self.enforce_eager
         self.world_size = config.tensor_parallel_size
         self.rank = rank
         self.event = event
@@ -199,7 +201,8 @@ class ModelRunner:
         else:
             bs = input_ids.size(0)
             context = get_context()
-            graph = self.graphs[next(x for x in self.graph_bs if x >= bs)]
+            pad = next(x for x in self.graph_bs if x >= bs)
+            graph = self.graphs[pad]
             graph_vars = self.graph_vars
             graph_vars["input_ids"][:bs] = input_ids
             graph_vars["positions"][:bs] = positions
@@ -208,6 +211,13 @@ class ModelRunner:
             graph_vars["context_lens"].zero_()
             graph_vars["context_lens"][:bs] = context.context_lens
             graph_vars["block_tables"][:bs, :context.block_tables.size(1)] = context.block_tables
+            if self.use_breakable:
+                # Decode attention runs eagerly during replay and reads the live
+                # context, so point it at the padded static buffers.
+                set_context(False,
+                            slot_mapping=graph_vars["slot_mapping"][:pad],
+                            context_lens=graph_vars["context_lens"][:pad],
+                            block_tables=graph_vars["block_tables"][:pad])
             graph.replay()
             return self.model.compute_logits(graph_vars["outputs"][:bs])
 
@@ -235,15 +245,28 @@ class ModelRunner:
         self.graphs = {}
         self.graph_pool = None
 
+        if self.use_breakable:
+            # One shared pool + capture stream across all segments/batch sizes.
+            # (o_buf is allocated once in allocate_kv_cache, shared by all layers.)
+            self.graph_pool = torch.cuda.graph_pool_handle()
+            self.capture_stream = torch.cuda.Stream()
+
         for bs in reversed(self.graph_bs):
-            graph = torch.cuda.CUDAGraph()
             set_context(False, slot_mapping=slot_mapping[:bs], context_lens=context_lens[:bs], block_tables=block_tables[:bs])
             outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # warmup
-            with torch.cuda.graph(graph, self.graph_pool):
-                outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # capture
-            if self.graph_pool is None:
-                self.graph_pool = graph.pool()
-            self.graphs[bs] = graph
+            if self.use_breakable:
+                torch.cuda.synchronize()
+                bcg = BreakableCUDAGraph()
+                with BreakableCUDAGraphCapture(bcg, pool=self.graph_pool, stream=self.capture_stream):
+                    outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # capture
+                self.graphs[bs] = bcg
+            else:
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph, self.graph_pool):
+                    outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # capture
+                if self.graph_pool is None:
+                    self.graph_pool = graph.pool()
+                self.graphs[bs] = graph
             torch.cuda.synchronize()
             reset_context()
 

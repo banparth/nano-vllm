@@ -98,6 +98,7 @@ PROMPT_SLICES: dict[str, list[str]] = {
 CORR_CONFIGS: dict[str, dict[str, Any]] = {
     "eager_b256": dict(enforce_eager=True, kvcache_block_size=256),
     "graph_b256": dict(enforce_eager=False, kvcache_block_size=256),
+    "breakable_b256": dict(enforce_eager=False, use_breakable_cudagraph=True, kvcache_block_size=256),
     "eager_b512": dict(enforce_eager=True, kvcache_block_size=512),
 }
 
@@ -178,6 +179,7 @@ def _build(spec, scenario: str, corr_cfg: dict[str, Any]):
         max_num_batched_tokens=4096,
         max_num_seqs=16,
         enforce_eager=corr_cfg["enforce_eager"],
+        use_breakable_cudagraph=corr_cfg.get("use_breakable_cudagraph", False),
         kvcache_block_size=corr_cfg["kvcache_block_size"],
     ))
 
