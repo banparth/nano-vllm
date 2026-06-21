@@ -23,6 +23,9 @@ dependencies = [
 [project.urls]
 Homepage="https://github.com/GeeeekExplorer/nano-vllm"
 
+[dependency-groups]
+dev = ["pytest>=8"]
+
 [tool.scikit-build]
 cmake.version = ">=3.26"
 cmake.build-type = "Release"
@@ -48,6 +51,13 @@ reportPrivateImportUsage = "none"
 # attribute unless the class is @final. Too noisy for this codebase where
 # attributes are obvious from their __init__ assignments.
 reportUnannotatedClassAttribute = "none"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --import-mode=importlib"
+markers = [
+    "gpu: requires a CUDA device",
+]
 
 [tool.uv]
 no-build-isolation-package = ["flash-attn", "nano-vllm"]
