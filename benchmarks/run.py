@@ -29,8 +29,14 @@ from transformers import AutoTokenizer
 from benchmarks import models as M
 from benchmarks.configs import resolve_config
 from benchmarks.engine import (
-    build_llm, destroy_llm, engine_static_stats, install_greedy_sampler,
-    peak_memory_bytes, pop_cache_stats, reset_peak_memory, warmup,
+    build_llm,
+    destroy_llm,
+    engine_static_stats,
+    install_greedy_sampler,
+    peak_memory_bytes,
+    pop_cache_stats,
+    reset_peak_memory,
+    warmup,
 )
 from benchmarks.metrics import run_workload
 from benchmarks.results import Cell, save_results
@@ -42,19 +48,23 @@ SUITES: dict[str, dict] = {
     "smoke": {
         "models": ["0.6B"],
         "cells": [
-            ("random",   ["default"], dict(num_seqs=32, min_input=64, max_input=256, output_len=64)),
+            ("random", ["default"], dict(num_seqs=32, min_input=64, max_input=256, output_len=64)),
             ("sharegpt", ["default"], dict(num_prompts=64, output_len=32)),
-            ("latency",  ["default"], dict(prompt_len=256, output_len=64)),
+            ("latency", ["default"], dict(prompt_len=256, output_len=64)),
         ],
     },
     "full": {
-        "models": None,   # all locally available
+        "models": None,  # all locally available
         "cells": [
-            ("random",     ["default", "big_block"], dict(num_seqs=256, output_len=256)),
-            ("sharegpt",   ["default", "tight_kv"],  dict(num_prompts=512, output_len=64)),
-            ("longprefix", ["default", "tight_kv"],  dict(shared_prefix=2048, num_prompts=128, output_len=64)),
-            ("latency",    ["default", "eager"],     dict(prompt_len=512, output_len=128)),
-            ("gsm8k",      ["default"],              dict(num_questions=200, output_len=512)),
+            ("random", ["default", "big_block"], dict(num_seqs=256, output_len=256)),
+            ("sharegpt", ["default", "tight_kv"], dict(num_prompts=512, output_len=64)),
+            (
+                "longprefix",
+                ["default", "tight_kv"],
+                dict(shared_prefix=2048, num_prompts=128, output_len=64),
+            ),
+            ("latency", ["default", "eager"], dict(prompt_len=512, output_len=128)),
+            ("gsm8k", ["default"], dict(num_questions=200, output_len=512)),
         ],
     },
     # Forward-compatible CPU KV tier comparison (OFF vs ON). cpu_* presets are
@@ -63,8 +73,12 @@ SUITES: dict[str, dict] = {
     "cpu-tier": {
         "models": ["0.6B", "1.7B", "4B", "8B"],
         "cells": [
-            ("sharegpt",   ["cpu_off", "cpu_on"], dict(num_prompts=256, output_len=64)),
-            ("longprefix", ["cpu_off", "cpu_on"], dict(shared_prefix=2048, num_prompts=256, output_len=64)),
+            ("sharegpt", ["cpu_off", "cpu_on"], dict(num_prompts=256, output_len=64)),
+            (
+                "longprefix",
+                ["cpu_off", "cpu_on"],
+                dict(shared_prefix=2048, num_prompts=256, output_len=64),
+            ),
         ],
     },
 }
@@ -95,8 +109,7 @@ def _filter_cells(suite: str, wl_sel: str | None, cfg_sel: str | None):
     return out
 
 
-def _run_cell(spec: M.ModelSpec, mkey: str, wname: str, wl, cname: str,
-              max_model_len: int) -> Cell:
+def _run_cell(spec: M.ModelSpec, mkey: str, wname: str, wl, cname: str, max_model_len: int) -> Cell:
     if isinstance(wl, Exception):
         return Cell(mkey, wname, cname, "error", f"workload build failed: {wl}")
     cfg = resolve_config(spec, cname, max_model_len=max_model_len)
@@ -130,25 +143,30 @@ def _summary_line(c: Cell) -> str:
     if c.workload == "latency":
         body = f"ttft={m.get('ttft_ms'):.1f}ms decode={m.get('decode_tok_s'):.0f}tok/s p99={m.get('inter_token_p99_ms'):.1f}ms"
     elif c.workload == "gsm8k":
-        body = f"acc={m.get('accuracy', 0)*100:.1f}% ({m.get('correct')}/{m.get('total')}) {m.get('output_tok_s'):.0f}tok/s"
+        body = f"acc={m.get('accuracy', 0) * 100:.1f}% ({m.get('correct')}/{m.get('total')}) {m.get('output_tok_s'):.0f}tok/s"
     elif c.metrics.get("wall_speedup") is not None and "cold_s" in m:
         body = f"cold={m.get('cold_s'):.2f}s warm={m.get('warm_s'):.2f}s speedup={m.get('wall_speedup'):.2f}x"
     else:
         body = f"{m.get('total_tok_s'):.0f}tok/s out={m.get('output_tok_s'):.0f}tok/s"
-    return f"  [ ok  ] {c.key:<34} {body}  peak={m.get('peak_gpu_gib','?')}GiB"
+    return f"  [ ok  ] {c.key:<34} {body}  peak={m.get('peak_gpu_gib', '?')}GiB"
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--suite", choices=list(SUITES), default="smoke")
     ap.add_argument("--models", default=None, help="comma list of keys (default: suite's models)")
     ap.add_argument("--workloads", default=None, help=f"comma list to filter ({ALL_WORKLOADS})")
     ap.add_argument("--configs", default=None, help="comma list of config presets to filter")
     ap.add_argument("--label", default=None, help="results/<label>.json (default: suite name)")
     ap.add_argument("--max-model-len", type=int, default=4096)
-    ap.add_argument("--stochastic", action="store_true",
-                    help="use the engine's real sampler instead of deterministic greedy "
-                         "(disables stable output checksums)")
+    ap.add_argument(
+        "--stochastic",
+        action="store_true",
+        help="use the engine's real sampler instead of deterministic greedy "
+        "(disables stable output checksums)",
+    )
     ap.add_argument("--list", action="store_true", help="list suites/models/workloads and exit")
     args = ap.parse_args()
 
@@ -165,7 +183,9 @@ def main() -> int:
     model_keys = _resolve_models(args.suite, args.models)
     cells_spec = _filter_cells(args.suite, args.workloads, args.configs)
     if not model_keys:
-        print("[error] no available models to run. Download with: uv run python -m benchmarks.download_models")
+        print(
+            "[error] no available models to run. Download with: uv run python -m benchmarks.download_models"
+        )
         return 2
 
     print(f"[run] suite={args.suite} label={label} models={model_keys}")

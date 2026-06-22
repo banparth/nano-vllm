@@ -56,8 +56,14 @@ def _worker_nanovllm(model_path: str, max_tokens: int, out_path: str) -> None:
     from nanovllm import LLM, SamplingParams
 
     install_greedy_sampler()
-    llm = LLM(model_path, enforce_eager=True, tensor_parallel_size=1,
-              max_model_len=2048, max_num_batched_tokens=4096, max_num_seqs=16)
+    llm = LLM(
+        model_path,
+        enforce_eager=True,
+        tensor_parallel_size=1,
+        max_model_len=2048,
+        max_num_batched_tokens=4096,
+        max_num_seqs=16,
+    )
     sp = SamplingParams(temperature=1.0, max_tokens=max_tokens, ignore_eos=True)
     # generate() returns dicts at runtime (engine annotates it list[str]); Any
     # keeps the type checker quiet without asserting the wrong element type.
@@ -79,11 +85,14 @@ def _worker_hf(model_path: str, max_tokens: int, out_path: str) -> None:
         ids = tok(prompt, return_tensors="pt").to("cuda")
         with torch.inference_mode():
             out = model.generate(
-                **ids, do_sample=False, num_beams=1,
-                min_new_tokens=max_tokens, max_new_tokens=max_tokens,
+                **ids,
+                do_sample=False,
+                num_beams=1,
+                min_new_tokens=max_tokens,
+                max_new_tokens=max_tokens,
                 pad_token_id=tok.eos_token_id,
             )
-        gen = out[0][ids["input_ids"].shape[1]:].tolist()
+        gen = out[0][ids["input_ids"].shape[1] :].tolist()
         tokens[i] = gen
     with open(out_path, "w") as f:
         json.dump(tokens, f)
@@ -97,10 +106,22 @@ def _run_worker(kind: str, model_path: str, max_tokens: int) -> dict[int, list[i
     os.close(fd)
     try:
         proc = subprocess.run(
-            [sys.executable, os.path.abspath(__file__), "--worker", kind,
-             "--model-path", model_path, "--max-tokens", str(max_tokens),
-             "--out", out_path],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=1800,
+            [
+                sys.executable,
+                os.path.abspath(__file__),
+                "--worker",
+                kind,
+                "--model-path",
+                model_path,
+                "--max-tokens",
+                str(max_tokens),
+                "--out",
+                out_path,
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=1800,
         )
         if proc.returncode != 0:
             raise RuntimeError(f"{kind} worker failed:\n{proc.stderr[-2000:]}")
@@ -144,21 +165,27 @@ def compare_model(model_key: str, model_path: str, max_tokens: int, strict: bool
             tag = "FAIL" if strict else "warn"
             if strict:
                 ok = False
-            print(f"  [{tag}] prompt{i}: agree {agree}/{max_tokens} then diverge "
-                  f"(nano={a[agree]} hf={b[agree]})")
+            print(
+                f"  [{tag}] prompt{i}: agree {agree}/{max_tokens} then diverge "
+                f"(nano={a[agree]} hf={b[agree]})"
+            )
     mean_frac = total_agree / (len(PROMPTS) * max_tokens)
-    print(f"  mean agreement: {mean_frac*100:.1f}%")
+    print(f"  mean agreement: {mean_frac * 100:.1f}%")
     return ok
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     # worker hooks (internal)
     ap.add_argument("--worker", choices=("nanovllm", "hf"), default=None, help=argparse.SUPPRESS)
     ap.add_argument("--model-path", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--out", default=None, help=argparse.SUPPRESS)
     # user-facing
-    ap.add_argument("--models", default=None, help="comma list of model keys (default: all available)")
+    ap.add_argument(
+        "--models", default=None, help="comma list of model keys (default: all available)"
+    )
     ap.add_argument("--max-tokens", type=int, default=32)
     ap.add_argument("--strict", action="store_true", help="require full token-exact agreement")
     args = ap.parse_args()
@@ -171,10 +198,13 @@ def main() -> int:
         return 0
 
     from benchmarks.models import MODELS, available_keys, resolve_keys
+
     keys = resolve_keys(args.models) if args.models else available_keys()
     keys = [k for k in keys if MODELS[k].available]
     if not keys:
-        print("[error] no available models. Download with: uv run python -m benchmarks.download_models")
+        print(
+            "[error] no available models. Download with: uv run python -m benchmarks.download_models"
+        )
         return 2
 
     print(f"[oracle] models={keys} max_tokens={args.max_tokens} strict={args.strict}")

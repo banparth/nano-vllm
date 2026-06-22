@@ -12,8 +12,8 @@ import hashlib
 from time import perf_counter
 from typing import Any
 
-from nanovllm import LLM
 from benchmarks.workloads import Workload
+from nanovllm import LLM
 
 
 def checksum(token_lists: list[list[int]]) -> str:
@@ -92,7 +92,7 @@ def run_latency(llm: LLM, wl: Workload) -> dict[str, Any]:
     prompt = wl.prompts[0]
     llm.add_request(prompt, wl.sampling)
     t0 = perf_counter()
-    llm.step()                       # prefill -> first token
+    llm.step()  # prefill -> first token
     ttft = perf_counter() - t0
     step_times: list[float] = []
     while not llm.is_finished():

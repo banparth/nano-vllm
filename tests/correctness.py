@@ -101,7 +101,9 @@ PROMPT_SLICES: dict[str, list[str]] = {
 CORR_CONFIGS: dict[str, dict[str, Any]] = {
     "eager_b256": dict(enforce_eager=True, kvcache_block_size=256),
     "graph_b256": dict(enforce_eager=False, kvcache_block_size=256),
-    "breakable_b256": dict(enforce_eager=False, use_breakable_cudagraph=True, kvcache_block_size=256),
+    "breakable_b256": dict(
+        enforce_eager=False, use_breakable_cudagraph=True, kvcache_block_size=256
+    ),
     "eager_b512": dict(enforce_eager=True, kvcache_block_size=512),
 }
 
@@ -126,12 +128,13 @@ def _capture_to_per_prompt(num_prompts: int) -> list[list[float]]:
 
 
 def install_test_sampler(mode: str) -> None:
-    from nanovllm.layers import sampler as _sampler_mod
     from nanovllm import sampling_params as _sp_mod
+    from nanovllm.layers import sampler as _sampler_mod
 
     _sp_mod.SamplingParams.__post_init__ = lambda self: None
 
     if mode == "greedy":
+
         def forward(self, logits: torch.Tensor, temperatures: torch.Tensor):
             del self, temperatures
             log_probs = torch.log_softmax(logits.float(), dim=-1)
@@ -140,6 +143,7 @@ def install_test_sampler(mode: str) -> None:
             _CAPTURED_BATCHES.append(chosen.cpu().tolist())
             return tokens
     elif mode == "gumbel":
+
         def forward(self, logits: torch.Tensor, temperatures: torch.Tensor):
             del self
             scaled = logits.float() / temperatures.unsqueeze(dim=1).clamp_min(1e-10)
@@ -176,31 +180,37 @@ def _tight_util(spec) -> float:
 
 def _build(spec, scenario: str, corr_cfg: dict[str, Any]):
     gmu = _tight_util(spec) if scenario == "tight" else spec.gpu_mem_util
-    return build_llm(spec.path, dict(
-        gpu_memory_utilization=gmu,
-        max_model_len=2048,
-        max_num_batched_tokens=4096,
-        max_num_seqs=16,
-        enforce_eager=corr_cfg["enforce_eager"],
-        use_breakable_cudagraph=corr_cfg.get("use_breakable_cudagraph", False),
-        kvcache_block_size=corr_cfg["kvcache_block_size"],
-    ))
+    return build_llm(
+        spec.path,
+        dict(
+            gpu_memory_utilization=gmu,
+            max_model_len=2048,
+            max_num_batched_tokens=4096,
+            max_num_seqs=16,
+            enforce_eager=corr_cfg["enforce_eager"],
+            use_breakable_cudagraph=corr_cfg.get("use_breakable_cudagraph", False),
+            kvcache_block_size=corr_cfg["kvcache_block_size"],
+        ),
+    )
 
 
 def _generate(llm, prompts: list[str], mode: str, seed: int) -> ScenarioResult:
     from nanovllm import SamplingParams
+
     _capture_clear()
     _seed_rng(seed)
     temperature = 0.6 if mode == "gumbel" else 1.0
     sp = SamplingParams(temperature=temperature, max_tokens=MAX_TOKENS, ignore_eos=True)
     outputs = llm.generate(prompts, sp, use_tqdm=False)
-    return {"tokens": [o["token_ids"] for o in outputs],
-            "logprobs": _capture_to_per_prompt(len(prompts))}
+    return {
+        "tokens": [o["token_ids"] for o in outputs],
+        "logprobs": _capture_to_per_prompt(len(prompts)),
+    }
 
 
-def run_cell(spec, prompts: list[str], corr_cfg: dict[str, Any],
-             scenarios: list[str], mode: str, seed: int
-             ) -> tuple[dict[str, ScenarioResult], dict[str, str]]:
+def run_cell(
+    spec, prompts: list[str], corr_cfg: dict[str, Any], scenarios: list[str], mode: str, seed: int
+) -> tuple[dict[str, ScenarioResult], dict[str, str]]:
     results: dict[str, ScenarioResult] = {}
     skipped: dict[str, str] = {}
     want = set(scenarios)
@@ -232,26 +242,57 @@ def run_cell(spec, prompts: list[str], corr_cfg: dict[str, Any],
 # dist rendezvous port can't leak across cells. The parent only diffs the JSON
 # the worker returns.
 # --------------------------------------------------------------------------- #
-def _worker_cell(model_key: str, slice_name: str, config_name: str,
-                 scenarios: list[str], mode: str, seed: int, out_path: str) -> None:
+def _worker_cell(
+    model_key: str,
+    slice_name: str,
+    config_name: str,
+    scenarios: list[str],
+    mode: str,
+    seed: int,
+    out_path: str,
+) -> None:
     install_test_sampler(mode)
-    results, skipped = run_cell(MODELS[model_key], PROMPT_SLICES[slice_name],
-                                CORR_CONFIGS[config_name], scenarios, mode, seed)
+    results, skipped = run_cell(
+        MODELS[model_key],
+        PROMPT_SLICES[slice_name],
+        CORR_CONFIGS[config_name],
+        scenarios,
+        mode,
+        seed,
+    )
     Path(out_path).write_text(json.dumps({"results": results, "skipped": skipped}))
 
 
-def run_cell_subprocess(model_key: str, slice_name: str, config_name: str,
-                        scenarios: list[str], mode: str, seed: int
-                        ) -> tuple[dict[str, ScenarioResult], dict[str, str]]:
+def run_cell_subprocess(
+    model_key: str, slice_name: str, config_name: str, scenarios: list[str], mode: str, seed: int
+) -> tuple[dict[str, ScenarioResult], dict[str, str]]:
     fd, out_path = tempfile.mkstemp(suffix=".json", prefix="corr_cell_")
     os.close(fd)
     try:
         proc = subprocess.run(
-            [sys.executable, os.path.abspath(__file__), "--worker",
-             "--model", model_key, "--slice", slice_name, "--config", config_name,
-             "--scenarios", ",".join(scenarios), "--sampling", mode,
-             "--seed", str(seed), "--out", out_path],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=1800,
+            [
+                sys.executable,
+                os.path.abspath(__file__),
+                "--worker",
+                "--model",
+                model_key,
+                "--slice",
+                slice_name,
+                "--config",
+                config_name,
+                "--scenarios",
+                ",".join(scenarios),
+                "--sampling",
+                mode,
+                "--seed",
+                str(seed),
+                "--out",
+                out_path,
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=1800,
         )
         if proc.returncode != 0:
             tail = " | ".join(proc.stderr.strip().splitlines()[-3:])
@@ -304,8 +345,10 @@ def _compare(label: str, a: ScenarioResult, b: ScenarioResult, tol: float) -> bo
         overall_max = max(overall_max, max_d)
         if max_d > tol:
             ok = False
-            print(f"    [FAIL] {label}/prompt{i}: LOGPROB drift max|d|={max_d:.3e} "
-                  f"(tol={tol:.0e}) at pos {arg}")
+            print(
+                f"    [FAIL] {label}/prompt{i}: LOGPROB drift max|d|={max_d:.3e} "
+                f"(tol={tol:.0e}) at pos {arg}"
+            )
     if ok:
         kind = "bit-exact" if overall_max == 0.0 else f"max|d|={overall_max:.3e}"
         print(f"    [ok]   {label}: tokens match, {kind}")
@@ -316,18 +359,31 @@ def cell_golden_path(model: str, slice_name: str, config: str) -> Path:
     return GOLDEN_DIR / f"{model}__{slice_name}__{config}.json"
 
 
-def write_golden(path: Path, prompts: list[str], results: dict[str, ScenarioResult],
-                 mode: str, seed: int) -> None:
+def write_golden(
+    path: Path, prompts: list[str], results: dict[str, ScenarioResult], mode: str, seed: int
+) -> None:
     GOLDEN_DIR.mkdir(exist_ok=True)
-    path.write_text(json.dumps({
-        "prompts": prompts,
-        "sampling": {"mode": mode, "seed": seed, "max_tokens": MAX_TOKENS},
-        "scenarios": results,
-    }, indent=2) + "\n")
+    path.write_text(
+        json.dumps(
+            {
+                "prompts": prompts,
+                "sampling": {"mode": mode, "seed": seed, "max_tokens": MAX_TOKENS},
+                "scenarios": results,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
 
 
-def check_against_golden(path: Path, prompts: list[str], results: dict[str, ScenarioResult],
-                         mode: str, seed: int, tol: float) -> bool | None:
+def check_against_golden(
+    path: Path,
+    prompts: list[str],
+    results: dict[str, ScenarioResult],
+    mode: str,
+    seed: int,
+    tol: float,
+) -> bool | None:
     if not path.exists():
         print(f"    [skip] no golden ({path.name}); run with --bless")
         return None
@@ -354,11 +410,22 @@ def check_against_golden(path: Path, prompts: list[str], results: dict[str, Scen
 # Main.
 # --------------------------------------------------------------------------- #
 def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--models", default=None, help="comma list of model keys (default: all available)")
-    ap.add_argument("--slices", default="core", help=f"comma list of prompt slices {list(PROMPT_SLICES)} (default: core)")
-    ap.add_argument("--configs", default="eager_b256,graph_b256",
-                    help=f"comma list of configs {list(CORR_CONFIGS)} (default: eager_b256,graph_b256)")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--models", default=None, help="comma list of model keys (default: all available)"
+    )
+    ap.add_argument(
+        "--slices",
+        default="core",
+        help=f"comma list of prompt slices {list(PROMPT_SLICES)} (default: core)",
+    )
+    ap.add_argument(
+        "--configs",
+        default="eager_b256,graph_b256",
+        help=f"comma list of configs {list(CORR_CONFIGS)} (default: eager_b256,graph_b256)",
+    )
     ap.add_argument("--scenario", choices=(*SCENARIOS, "all"), default="all")
     ap.add_argument("--sampling", choices=("greedy", "gumbel"), default="greedy")
     ap.add_argument("--seed", type=int, default=0)
@@ -380,21 +447,26 @@ def main() -> int:
 
     if args.worker:
         scenarios = [s.strip() for s in (args.scenarios or "").split(",") if s.strip()]
-        _worker_cell(args.model, args.slice_name, args.config, scenarios,
-                     args.sampling, args.seed, args.out)
+        _worker_cell(
+            args.model, args.slice_name, args.config, scenarios, args.sampling, args.seed, args.out
+        )
         return 0
 
     model_keys = resolve_keys(args.models) if args.models else available_keys()
     model_keys = [k for k in model_keys if MODELS[k].available]
     if not model_keys:
-        print("[error] no available models. Download with: uv run python -m benchmarks.download_models")
+        print(
+            "[error] no available models. Download with: uv run python -m benchmarks.download_models"
+        )
         return 2
     slices = [s.strip() for s in args.slices.split(",") if s.strip()]
     cfgs = [c.strip() for c in args.configs.split(",") if c.strip()]
     scenarios = list(SCENARIOS) if args.scenario == "all" else [args.scenario]
 
-    print(f"[correctness] models={model_keys} slices={slices} configs={cfgs} "
-          f"sampling={args.sampling} scenarios={scenarios}")
+    print(
+        f"[correctness] models={model_keys} slices={slices} configs={cfgs} "
+        f"sampling={args.sampling} scenarios={scenarios}"
+    )
 
     all_ok = True
     n_cells = 0
@@ -404,7 +476,9 @@ def main() -> int:
             for cfg_name in cfgs:
                 n_cells += 1
                 print(f"\n=== {mkey} | {slice_name} | {cfg_name} ===")
-                results, skipped = run_cell_subprocess(mkey, slice_name, cfg_name, scenarios, args.sampling, args.seed)
+                results, skipped = run_cell_subprocess(
+                    mkey, slice_name, cfg_name, scenarios, args.sampling, args.seed
+                )
                 for sc, reason in skipped.items():
                     print(f"    [skip] {sc}: {reason}")
                 if not results:
@@ -418,10 +492,17 @@ def main() -> int:
                 if not args.no_cross_check and len(results) >= 2:
                     ref_name, *rest = list(results)
                     for name in rest:
-                        if not _compare(f"{ref_name} vs {name}", results[ref_name], results[name], args.logprob_tol):
+                        if not _compare(
+                            f"{ref_name} vs {name}",
+                            results[ref_name],
+                            results[name],
+                            args.logprob_tol,
+                        ):
                             all_ok = False
                 # golden
-                verdict = check_against_golden(path, prompts, results, args.sampling, args.seed, args.logprob_tol)
+                verdict = check_against_golden(
+                    path, prompts, results, args.sampling, args.seed, args.logprob_tol
+                )
                 if verdict is False:
                     all_ok = False
 

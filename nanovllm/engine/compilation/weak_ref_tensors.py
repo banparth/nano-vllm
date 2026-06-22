@@ -1,5 +1,7 @@
-import torch
 from typing import Any
+
+import torch
+
 
 def weak_ref_tensor(tensor: torch.Tensor) -> torch.Tensor:
     """

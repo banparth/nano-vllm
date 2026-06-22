@@ -2,11 +2,11 @@
 # protected members of BreakableCUDAGraph / BreakableCUDAGraphCapture (and
 # torch.cuda._POOL_HANDLE) from within this same module. Allow that here.
 # pyright: reportPrivateUsage=false
-import torch
-from contextvars import ContextVar
-from typing import Callable, Any
 import threading
+from contextvars import ContextVar
+from typing import Any, Callable
 
+import torch
 
 _current_capture_var: ContextVar["BreakableCUDAGraphCapture | None"] = ContextVar(
     "current_capture", default=None
@@ -17,6 +17,7 @@ _current_stream_var: ContextVar[torch.cuda.Stream | None] = ContextVar(
 _forked_streams_var: ContextVar[set[torch.cuda.Stream] | None] = ContextVar(
     "forked_streams", default=None
 )
+
 
 # copied from sglang
 def _copy_output(dst: Any, src: Any) -> Any:
@@ -72,6 +73,7 @@ def get_current_stream(device: torch.device | None = None) -> torch.cuda.Stream:
         return torch.cuda.current_stream(device)
     return stream
 
+
 def _stream_is_capturing() -> bool:
     """True if the current stream is in the middle of a CUDA graph capture."""
     try:
@@ -80,20 +82,21 @@ def _stream_is_capturing() -> bool:
         return False
     return True
 
-def eager_on_graph(): 
+
+def eager_on_graph():
     def decorator(inner: Callable[..., Any]):
-        
+
         def wrapper(*args: Any, **kwargs: Any):
             stream = get_current_stream()
             capture = _current_capture_var.get()
-            
+
             if capture is None:
                 return inner(*args, **kwargs)
 
             capture._end_current_segment()
-            
+
             output = inner(*args, **kwargs)
-            
+
             captured_inner = inner
             captured_args = tuple(_weak_ref_if_tensor(a) for a in args)
             captured_kwargs = {k: _weak_ref_if_tensor(v) for k, v in kwargs.items()}
@@ -102,15 +105,15 @@ def eager_on_graph():
             def replay_fn():
                 new_out = captured_inner(*captured_args, **captured_kwargs)
                 return _copy_output(captured_output, new_out)
-            
+
             capture._cuda_graph._break_fns.append(replay_fn)
-            
+
             capture._begin_new_segment()
-            
+
             return output
-            
+
         return wrapper
-    
+
     return decorator
 
 
@@ -118,7 +121,9 @@ def eager_on_graph():
 # during breakable capture. We need this because capture_end() on a torch
 # CUDAGraph fails if there are still side streams participating in the capture
 # — so before ending each segment we auto-join any forked-but-not-rejoined streams.
-_original_wait_stream: Callable[[torch.cuda.Stream, torch.cuda.Stream | torch._C.Stream], None] | None = None 
+_original_wait_stream: (
+    Callable[[torch.cuda.Stream, torch.cuda.Stream | torch._C.Stream], None] | None
+) = None
 _hook_lock = threading.Lock()
 _hook_refcount = 0
 
@@ -138,6 +143,7 @@ def _install_wait_stream_hook():
             )
         _hook_refcount += 1
 
+
 def _uninstall_wait_stream_hook():
     global _original_wait_stream, _hook_refcount
     with _hook_lock:
@@ -146,7 +152,6 @@ def _uninstall_wait_stream_hook():
             assert _original_wait_stream is not None, "wait_stream hook not installed"
             torch.cuda.Stream.wait_stream = _original_wait_stream  # type: ignore[assignment]
             _original_wait_stream = None
-
 
 
 class BreakableCUDAGraph:
@@ -164,7 +169,6 @@ class BreakableCUDAGraph:
                 self._break_fns[i]()
 
 
-        
 class BreakableCUDAGraphCapture:
     def __init__(
         self,
@@ -187,14 +191,13 @@ class BreakableCUDAGraphCapture:
         if self._stream is not None:
             self._stream_ctx = torch.cuda.stream(self._stream)
             self._stream_ctx.__enter__()
-        
+
         self._current_capture_token = _current_capture_var.set(self)
         self._forked_streams_token = _forked_streams_var.set(set())
         self._current_stream_token = _current_stream_var.set(
             self._stream if self._stream is not None else torch.cuda.current_stream()
         )
         self._begin_new_segment()
-        
 
     def __exit__(self, *args: object) -> None:
         try:
@@ -210,7 +213,7 @@ class BreakableCUDAGraphCapture:
                 self._stream_ctx.__exit__(*args)
                 self._stream_ctx = None
             _uninstall_wait_stream_hook()
-    
+
     def _begin_new_segment(self) -> None:
         # capture_begin() fails if the stream is already capturing, so the
         # previous segment must have been ended via _end_current_segment().
@@ -218,14 +221,13 @@ class BreakableCUDAGraphCapture:
             "previous segment capture was not ended before starting a new one"
         )
         graph = torch.cuda.CUDAGraph()
-        graph.capture_begin(
-            pool=self._pool, capture_error_mode=self._capture_error_mode
-        )
+        graph.capture_begin(pool=self._pool, capture_error_mode=self._capture_error_mode)
         self._cuda_graph._segments.append(graph)
-        
+
     def _end_current_segment(self) -> None:
         self._cuda_graph._segments[-1].capture_end()
-        
-@eager_on_graph()        
+
+
+@eager_on_graph()
 def break_on_graph():
     pass

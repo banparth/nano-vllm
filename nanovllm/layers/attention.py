@@ -1,11 +1,11 @@
 import torch
-from torch import nn
 import triton
 import triton.language as tl
-
 from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
-from nanovllm.utils.context import get_context
+from torch import nn
+
 from nanovllm.engine.breakable_cuda_graph.breakable_cuda_graph import eager_on_graph
+from nanovllm.utils.context import get_context
 
 
 @triton.jit
@@ -21,7 +21,8 @@ def store_kvcache_kernel(
 ):
     idx = tl.program_id(0)
     slot = tl.load(slot_mapping_ptr + idx)
-    if slot == -1: return
+    if slot == -1:
+        return
     key_offsets = idx * key_stride + tl.arange(0, D)
     value_offsets = idx * value_stride + tl.arange(0, D)
     key = tl.load(key_ptr + key_offsets)
@@ -31,18 +32,25 @@ def store_kvcache_kernel(
     tl.store(v_cache_ptr + cache_offsets, value)
 
 
-def store_kvcache(key: torch.Tensor, value: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, slot_mapping: torch.Tensor):
+def store_kvcache(
+    key: torch.Tensor,
+    value: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    slot_mapping: torch.Tensor,
+):
     N, num_heads, head_dim = key.shape
     D = num_heads * head_dim
     assert key.stride(-1) == 1 and value.stride(-1) == 1
     assert key.stride(1) == head_dim and value.stride(1) == head_dim
     assert k_cache.stride(1) == D and v_cache.stride(1) == D
     assert slot_mapping.numel() == N
-    store_kvcache_kernel[(N,)](key, key.stride(0), value, value.stride(0), k_cache, v_cache, slot_mapping, D)
+    store_kvcache_kernel[(N,)](
+        key, key.stride(0), value, value.stride(0), k_cache, v_cache, slot_mapping, D
+    )
 
 
 class Attention(nn.Module):
-
     def __init__(
         self,
         num_heads,
@@ -60,9 +68,15 @@ class Attention(nn.Module):
     @eager_on_graph()
     def _attn_decode(self, q: torch.Tensor):
         context = get_context()
-        o = flash_attn_with_kvcache(q.unsqueeze(1), self.k_cache, self.v_cache,
-                                    cache_seqlens=context.context_lens, block_table=context.block_tables,
-                                    softmax_scale=self.scale, causal=True)
+        o = flash_attn_with_kvcache(
+            q.unsqueeze(1),
+            self.k_cache,
+            self.v_cache,
+            cache_seqlens=context.context_lens,
+            block_table=context.block_tables,
+            softmax_scale=self.scale,
+            causal=True,
+        )
         return o
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
@@ -71,12 +85,20 @@ class Attention(nn.Module):
         if k_cache.numel() and v_cache.numel():
             store_kvcache(k, v, k_cache, v_cache, context.slot_mapping)
         if context.is_prefill:
-            if context.block_tables is not None:    # prefix cache
+            if context.block_tables is not None:  # prefix cache
                 k, v = k_cache, v_cache
-            o = flash_attn_varlen_func(q, k, v,
-                                       max_seqlen_q=context.max_seqlen_q, cu_seqlens_q=context.cu_seqlens_q,
-                                       max_seqlen_k=context.max_seqlen_k, cu_seqlens_k=context.cu_seqlens_k,
-                                       softmax_scale=self.scale, causal=True, block_table=context.block_tables)
+            o = flash_attn_varlen_func(
+                q,
+                k,
+                v,
+                max_seqlen_q=context.max_seqlen_q,
+                cu_seqlens_q=context.cu_seqlens_q,
+                max_seqlen_k=context.max_seqlen_k,
+                cu_seqlens_k=context.cu_seqlens_k,
+                softmax_scale=self.scale,
+                causal=True,
+                block_table=context.block_tables,
+            )
             return o
         # decode: one code path. @eager_on_graph turns _attn_decode into a break
         # point during a breakable capture, and is a no-op everywhere else.

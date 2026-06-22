@@ -24,7 +24,10 @@ dependencies = [
 Homepage="https://github.com/GeeeekExplorer/nano-vllm"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.15.18",
+]
 
 [tool.scikit-build]
 cmake.version = ">=3.26"
@@ -51,6 +54,23 @@ reportPrivateImportUsage = "none"
 # attribute unless the class is @final. Too noisy for this codebase where
 # attributes are obvious from their __init__ assignments.
 reportUnannotatedClassAttribute = "none"
+
+[tool.ruff]
+# Match the project's existing style: longer lines than Black's default 88.
+line-length = 100
+# Lowest supported interpreter (see requires-python); keeps autofixes 3.10-safe.
+target-version = "py310"
+
+[tool.ruff.lint]
+# Formatting-only setup: the formatter handles layout, and isort ("I") keeps
+# import ordering consistent (Ruff's formatter intentionally leaves it alone).
+# Add more rule families here later if you want linting too.
+select = ["I"]
+
+[tool.ruff.format]
+# Defaults already match the codebase (double quotes, space indent). Also format
+# code snippets inside docstrings so examples stay consistent.
+docstring-code-format = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

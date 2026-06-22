@@ -53,8 +53,9 @@ def _gold_from_answer(answer_field: str) -> str:
     return nums[-1].replace(",", "") if nums else ""
 
 
-def load_gsm8k(path: str = DEFAULT_GSM8K_PATH, n: int | None = 200, seed: int = 0
-               ) -> list[tuple[str, str]]:
+def load_gsm8k(
+    path: str = DEFAULT_GSM8K_PATH, n: int | None = 200, seed: int = 0
+) -> list[tuple[str, str]]:
     """Load up to ``n`` (question, gold_answer) pairs, deterministically sampled."""
     path = ensure_gsm8k(path)
     items: list[tuple[str, str]] = []

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import enum
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -32,7 +33,7 @@ class KVConnectorMetadata:
     pass
 
 
-class KVConnectorBase:
+class KVConnectorBase(ABC):
     """Base class for KV connectors (mirrors vLLM's ``KVConnectorBase_V1``)."""
 
     def __init__(self, config: Config, role: KVConnectorRole):
@@ -90,11 +91,7 @@ class KVConnectorBase:
         return
 
     def save_kv_layer(
-        self,
-        layer_name: str,
-        kv_layer: torch.Tensor,
-        attn_metadata: Any,
-        **kwargs: Any,
+        self, layer_name: str, kv_layer: torch.Tensor, attn_metadata: Any, **kwargs: Any
     ) -> None:
         """Start saving a layer of KV from the paged buffer to the connector
         (may be async). Called from within the attention layer."""
@@ -105,9 +102,7 @@ class KVConnectorBase:
         prevent overwriting the paged buffer before saving completes."""
         return
 
-    def get_finished(
-        self, finished_req_ids: set[int]
-    ) -> tuple[set[int] | None, set[int] | None]:
+    def get_finished(self, finished_req_ids: set[int]) -> tuple[set[int] | None, set[int] | None]:
         """Notify ids of finished requests; return ids that finished async
         transfer as ``(sending/saving, recving/loading)``."""
         return None, None
@@ -132,12 +127,33 @@ class KVConnectorBase:
     def get_num_new_matched_tokens(
         self, request: Sequence, num_computed_tokens: int
     ) -> tuple[int | None, bool]:
-        """Number of new tokens that can be loaded from the external KV cache
-        beyond ``num_computed_tokens``. Must be side-effect free.
+        """
+        Get number of new tokens that can be loaded from the
+        external KV cache beyond the num_computed_tokens.
 
-        Returns ``(num_external_tokens, load_is_async)``; the count is ``None``
-        if the connector needs to be queried again later, and ``load_is_async``
-        must be ``False`` when the count is 0."""
+        Args:
+            request (Request): the request object.
+            num_computed_tokens (int): the number of locally
+                computed tokens for this request
+
+        Returns:
+            A tuple with the following elements:
+                - An optional number of tokens that can be loaded from the
+                  external KV cache beyond what is already computed.
+                  If None, it means that the connector needs more time to
+                  determine the number of matched tokens, and the scheduler
+                  should query for this request again later.
+                - `True` if external KV cache tokens will be loaded
+                  asynchronously (between scheduler steps). Must be
+                  'False' if the first element is 0.
+
+        Notes:
+            The connector should only consider the largest prefix of prompt-
+            tokens for which KV cache is actually available at the time of the
+            call. If the cache cannot be loaded for some tokens (e.g., due to
+            connectivity issues or eviction), those tokens must not be taken
+            into account.
+        """
         return 0, False
 
     def update_state_after_alloc(
@@ -147,9 +163,7 @@ class KVConnectorBase:
         for ``num_external_tokens`` to be loaded into."""
         return
 
-    def build_connector_meta(
-        self, seqs: list[Sequence], is_prefill: bool
-    ) -> KVConnectorMetadata:
+    def build_connector_meta(self, seqs: list[Sequence], is_prefill: bool) -> KVConnectorMetadata:
         """Build (and reset) this step's connector metadata for the worker.
 
         nano-vllm has no ``SchedulerOutput``, so the scheduled ``seqs`` plus

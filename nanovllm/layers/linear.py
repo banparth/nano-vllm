@@ -1,7 +1,7 @@
 import torch
-from torch import nn
-import torch.nn.functional as F
 import torch.distributed as dist
+import torch.nn.functional as F
+from torch import nn
 
 
 def divide(numerator, denominator):
@@ -10,7 +10,6 @@ def divide(numerator, denominator):
 
 
 class LinearBase(nn.Module):
-
     def __init__(
         self,
         input_size: int,
@@ -35,7 +34,6 @@ class LinearBase(nn.Module):
 
 
 class ReplicatedLinear(LinearBase):
-
     def __init__(
         self,
         input_size: int,
@@ -52,7 +50,6 @@ class ReplicatedLinear(LinearBase):
 
 
 class ColumnParallelLinear(LinearBase):
-
     def __init__(
         self,
         input_size: int,
@@ -74,7 +71,6 @@ class ColumnParallelLinear(LinearBase):
 
 
 class MergedColumnParallelLinear(ColumnParallelLinear):
-
     def __init__(
         self,
         input_size: int,
@@ -94,7 +90,6 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
 
 
 class QKVParallelLinear(ColumnParallelLinear):
-
     def __init__(
         self,
         hidden_size: int,
@@ -129,7 +124,6 @@ class QKVParallelLinear(ColumnParallelLinear):
 
 
 class RowParallelLinear(LinearBase):
-
     def __init__(
         self,
         input_size: int,

@@ -60,7 +60,12 @@ def _judge(base_cell, cand_cell, thr: float, acc_pts: float, allow_output: bool)
 
     bm, cm = base_cell["metrics"], cand_cell["metrics"]
 
-    if not allow_output and "checksum" in bm and "checksum" in cm and bm["checksum"] != cm["checksum"]:
+    if (
+        not allow_output
+        and "checksum" in bm
+        and "checksum" in cm
+        and bm["checksum"] != cm["checksum"]
+    ):
         return "FAIL", "output checksum changed"
 
     metric, direction = PRIMARY.get(base_cell["workload"], ("total_tok_s", "up"))
@@ -70,9 +75,9 @@ def _judge(base_cell, cand_cell, thr: float, acc_pts: float, allow_output: bool)
 
     if direction == "up_pts":
         if cand < base - acc_pts / 100:
-            return "REGRESSION", f"{metric} {base*100:.1f}% -> {cand*100:.1f}%"
+            return "REGRESSION", f"{metric} {base * 100:.1f}% -> {cand * 100:.1f}%"
         if cand > base + acc_pts / 100:
-            return "IMPROVED", f"{metric} {base*100:.1f}% -> {cand*100:.1f}%"
+            return "IMPROVED", f"{metric} {base * 100:.1f}% -> {cand * 100:.1f}%"
         return "OK", ""
     # higher-is-better ratio metric
     if base > 0 and cand < base * (1 - thr):
@@ -83,12 +88,23 @@ def _judge(base_cell, cand_cell, thr: float, acc_pts: float, allow_output: bool)
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("baseline")
     ap.add_argument("candidate")
-    ap.add_argument("--tol", type=float, default=0.03, help="fractional tolerance for tok/s + latency (default 0.03)")
-    ap.add_argument("--accuracy-pts", type=float, default=1.0, help="accuracy tolerance in points (default 1.0)")
-    ap.add_argument("--allow-output-change", action="store_true", help="don't FAIL on checksum changes")
+    ap.add_argument(
+        "--tol",
+        type=float,
+        default=0.03,
+        help="fractional tolerance for tok/s + latency (default 0.03)",
+    )
+    ap.add_argument(
+        "--accuracy-pts", type=float, default=1.0, help="accuracy tolerance in points (default 1.0)"
+    )
+    ap.add_argument(
+        "--allow-output-change", action="store_true", help="don't FAIL on checksum changes"
+    )
     args = ap.parse_args()
 
     base = load_results(args.baseline)
@@ -96,8 +112,12 @@ def main() -> int:
     b_cells = cells_by_key(base)
     c_cells = cells_by_key(cand)
 
-    print(f"baseline : {args.baseline}  ({base['env'].get('git_commit')} on {base['env'].get('git_branch')})")
-    print(f"candidate: {args.candidate}  ({cand['env'].get('git_commit')} on {cand['env'].get('git_branch')})")
+    print(
+        f"baseline : {args.baseline}  ({base['env'].get('git_commit')} on {base['env'].get('git_branch')})"
+    )
+    print(
+        f"candidate: {args.candidate}  ({cand['env'].get('git_commit')} on {cand['env'].get('git_branch')})"
+    )
     if base["env"].get("gpu") != cand["env"].get("gpu"):
         print(f"[warn] GPU differs: {base['env'].get('gpu')} vs {cand['env'].get('gpu')}")
     print()
@@ -110,7 +130,9 @@ def main() -> int:
     for key in sorted(b_cells):
         bcell = b_cells[key]
         ccell = c_cells.get(key)
-        verdict, detail = _judge(bcell, ccell, args.tol, args.accuracy_pts, args.allow_output_change)
+        verdict, detail = _judge(
+            bcell, ccell, args.tol, args.accuracy_pts, args.allow_output_change
+        )
         wl = bcell["workload"]
         metric, direction = PRIMARY.get(wl, ("total_tok_s", "up"))
         bm = bcell.get("metrics", {})
@@ -118,14 +140,20 @@ def main() -> int:
         if metric in bm and metric in cm:
             bv, cv = bm[metric], cm[metric]
             if direction == "up_pts":
-                bstr, cstr = f"{bv*100:.1f}%", f"{cv*100:.1f}%"
+                bstr, cstr = f"{bv * 100:.1f}%", f"{cv * 100:.1f}%"
             else:
                 bstr, cstr = f"{bv:.1f}", f"{cv:.1f}"
             delta = _fmt_delta(bv, cv, direction)
         else:
             metric, bstr, cstr, delta = "-", "-", "-", "-"
-        tag = {"REGRESSION": "REGRESSION", "FAIL": "FAIL  ***", "IMPROVED": "improved",
-               "OK": "ok", "SKIP": "skip", "MISSING": "MISSING"}.get(verdict, verdict)
+        tag = {
+            "REGRESSION": "REGRESSION",
+            "FAIL": "FAIL  ***",
+            "IMPROVED": "improved",
+            "OK": "ok",
+            "SKIP": "skip",
+            "MISSING": "MISSING",
+        }.get(verdict, verdict)
         line = f"{key:<34} {metric:<17} {bstr:>11} {cstr:>11} {delta:>9}  {tag}"
         if detail and verdict in ("FAIL", "REGRESSION", "MISSING"):
             line += f"  [{detail}]"

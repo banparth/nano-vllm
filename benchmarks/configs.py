@@ -20,12 +20,12 @@ from benchmarks.models import ModelSpec
 # lands; LLMEngine drops unknown kwargs, so cpu_on == cpu_off today and will
 # diverge automatically once the tier is implemented.
 PRESETS: dict[str, dict[str, Any]] = {
-    "default":  {},
-    "eager":    {"enforce_eager": True},
+    "default": {},
+    "eager": {"enforce_eager": True},
     "big_block": {"kvcache_block_size": 512},
     "tight_kv": {"gpu_memory_utilization": 0.30},
-    "cpu_off":  {"gpu_memory_utilization": 0.30, "cpu_memory_utilization": 0.0},
-    "cpu_on":   {"gpu_memory_utilization": 0.30, "cpu_memory_utilization": 0.4},
+    "cpu_off": {"gpu_memory_utilization": 0.30, "cpu_memory_utilization": 0.0},
+    "cpu_on": {"gpu_memory_utilization": 0.30, "cpu_memory_utilization": 0.4},
 }
 
 ALL_CONFIGS = list(PRESETS)
@@ -44,5 +44,5 @@ def resolve_config(spec: ModelSpec, preset: str, max_model_len: int = 4096) -> d
     }
     cfg.update(PRESETS[preset])
     if spec.force_eager:
-        cfg["enforce_eager"] = True   # e.g. 32B: CUDA-graph capture won't fit on 80GB
+        cfg["enforce_eager"] = True  # e.g. 32B: CUDA-graph capture won't fit on 80GB
     return cfg

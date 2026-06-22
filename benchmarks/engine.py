@@ -44,11 +44,18 @@ def _hard_cleanup() -> None:
     except Exception:
         pass
 
+
 # All counters the block manager may expose. CPU-tier fields default to 0 until
 # the KV-cache connector lands, so the harness reads a stable schema either way.
 STAT_KEYS = (
-    "gpu_hits", "cpu_hits", "misses", "evictions",
-    "cpu_lru_drops", "h2d_copies", "d2h_copies", "prefill_seqs",
+    "gpu_hits",
+    "cpu_hits",
+    "misses",
+    "evictions",
+    "cpu_lru_drops",
+    "h2d_copies",
+    "d2h_copies",
+    "prefill_seqs",
 )
 
 
@@ -66,8 +73,8 @@ def install_greedy_sampler() -> None:
     global _GREEDY_INSTALLED
     if _GREEDY_INSTALLED:
         return
-    from nanovllm.layers import sampler as _sampler_mod
     from nanovllm import sampling_params as _sp_mod
+    from nanovllm.layers import sampler as _sampler_mod
 
     _sp_mod.SamplingParams.__post_init__ = lambda self: None
 
