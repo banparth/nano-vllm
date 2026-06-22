@@ -1,13 +1,12 @@
 from collections import deque
 
 from nanovllm.config import Config
-from nanovllm.engine.sequence import Sequence, SequenceStatus
 from nanovllm.engine.block_manager import BlockManager
 from nanovllm.engine.cache_connector.base import KVConnectorBase, KVConnectorRole
+from nanovllm.engine.sequence import Sequence, SequenceStatus
 
 
 class Scheduler:
-
     def __init__(self, config: Config):
         self.max_num_seqs = config.max_num_seqs
         self.max_num_batched_tokens = config.max_num_batched_tokens
@@ -45,7 +44,9 @@ class Scheduler:
                 num_tokens = seq.num_tokens - num_cached_blocks * self.block_size
             else:
                 num_tokens = seq.num_tokens - seq.num_cached_tokens
-            if remaining < num_tokens and scheduled_seqs:  # only allow chunked prefill for the first seq
+            if (
+                remaining < num_tokens and scheduled_seqs
+            ):  # only allow chunked prefill for the first seq
                 break
             if not seq.block_table:
                 self.block_manager.allocate(seq, num_cached_blocks)
@@ -92,7 +93,9 @@ class Scheduler:
             if is_prefill and seq.num_cached_tokens < seq.num_tokens:
                 continue
             seq.append_token(token_id)
-            if (not seq.ignore_eos and token_id == self.eos) or seq.num_completion_tokens == seq.max_tokens:
+            if (
+                not seq.ignore_eos and token_id == self.eos
+            ) or seq.num_completion_tokens == seq.max_tokens:
                 seq.status = SequenceStatus.FINISHED
                 self.block_manager.deallocate(seq)
                 self.running.remove(seq)
