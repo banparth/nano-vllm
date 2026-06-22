@@ -8,8 +8,8 @@ from transformers import AutoTokenizer
 
 from nanovllm.config import Config
 from nanovllm.engine.model_runner import ModelRunner
+from nanovllm.engine.request import Request
 from nanovllm.engine.scheduler import Scheduler
-from nanovllm.engine.sequence import Sequence
 from nanovllm.sampling_params import SamplingParams
 
 
@@ -18,7 +18,7 @@ class LLMEngine:
         config_fields = {field.name for field in fields(Config)}
         config_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
         config = Config(model, **config_kwargs)
-        Sequence.block_size = config.kvcache_block_size
+        Request.block_size = config.kvcache_block_size
         self.ps = []
         self.events = []
         ctx = mp.get_context("spawn")
@@ -43,16 +43,24 @@ class LLMEngine:
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
         if isinstance(prompt, str):
             prompt = self.tokenizer.encode(prompt)
-        seq = Sequence(prompt, sampling_params)
-        self.scheduler.add(seq)
+        request = Request(prompt, sampling_params)
+        self.scheduler.add(request)
 
     def step(self):
-        seqs, is_prefill = self.scheduler.schedule()
-        connector_meta = self.scheduler.build_connector_meta(seqs, is_prefill)
-        num_tokens = sum(seq.num_scheduled_tokens for seq in seqs) if is_prefill else -len(seqs)
-        token_ids = self.model_runner.call("run", seqs, is_prefill, connector_meta)
-        self.scheduler.postprocess(seqs, token_ids, is_prefill)
-        outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
+        requests, is_prefill = self.scheduler.schedule()
+        connector_meta = self.scheduler.build_connector_meta(requests, is_prefill)
+        num_tokens = (
+            sum(request.num_scheduled_tokens for request in requests)
+            if is_prefill
+            else -len(requests)
+        )
+        token_ids = self.model_runner.call("run", requests, is_prefill, connector_meta)
+        self.scheduler.postprocess(requests, token_ids, is_prefill)
+        outputs = [
+            (request.request_id, request.output_token_ids)
+            for request in requests
+            if request.is_finished
+        ]
         return outputs, num_tokens
 
     def is_finished(self):
@@ -84,11 +92,11 @@ class LLMEngine:
                     "Decode": f"{int(decode_throughput)}tok/s",
                 }
             )
-            for seq_id, token_ids in output:
-                outputs[seq_id] = token_ids
+            for request_id, token_ids in output:
+                outputs[request_id] = token_ids
                 pbar.update(1)
         pbar.close()
-        outputs = [outputs[seq_id] for seq_id in sorted(outputs.keys())]
+        outputs = [outputs[request_id] for request_id in sorted(outputs.keys())]
         outputs = [
             {"text": self.tokenizer.decode(token_ids), "token_ids": token_ids}
             for token_ids in outputs

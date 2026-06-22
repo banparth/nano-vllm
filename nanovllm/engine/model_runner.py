@@ -11,7 +11,7 @@ from nanovllm.engine.breakable_cuda_graph.breakable_cuda_graph import (
     BreakableCUDAGraphCapture,
 )
 from nanovllm.engine.cache_connector.base import KVConnectorBase, KVConnectorRole
-from nanovllm.engine.sequence import Sequence
+from nanovllm.engine.request import Request
 from nanovllm.layers.sampler import Sampler
 from nanovllm.models.qwen3 import Qwen3ForCausalLM
 from nanovllm.utils.context import get_context, reset_context, set_context
@@ -106,10 +106,10 @@ class ModelRunner:
         )
         seq_len = min(max_num_batched_tokens, max_model_len)
         num_seqs = min(max_num_batched_tokens // seq_len, self.config.max_num_seqs)
-        seqs = [Sequence([0] * seq_len) for _ in range(num_seqs)]
-        for seq in seqs:
-            seq.num_scheduled_tokens = seq_len
-        self.run(seqs, True)
+        requests = [Request([0] * seq_len) for _ in range(num_seqs)]
+        for request in requests:
+            request.num_scheduled_tokens = seq_len
+        self.run(requests, True)
         torch.cuda.empty_cache()
 
     def allocate_kv_cache(self):
@@ -153,15 +153,18 @@ class ModelRunner:
                 layer_id += 1
         self.connector.register_kv_caches(kv_caches)
 
-    def prepare_block_tables(self, seqs: list[Sequence]):
-        max_len = max(len(seq.block_table) for seq in seqs)
-        block_tables = [seq.block_table + [-1] * (max_len - len(seq.block_table)) for seq in seqs]
+    def prepare_block_tables(self, requests: list[Request]):
+        max_len = max(len(request.block_table) for request in requests)
+        block_tables = [
+            request.block_table + [-1] * (max_len - len(request.block_table))
+            for request in requests
+        ]
         block_tables = torch.tensor(block_tables, dtype=torch.int32, pin_memory=True).cuda(
             non_blocking=True
         )
         return block_tables
 
-    def prepare_prefill(self, seqs: list[Sequence]):
+    def prepare_prefill(self, requests: list[Request]):
         input_ids = []
         positions = []
         cu_seqlens_q = [0]
@@ -170,32 +173,32 @@ class ModelRunner:
         max_seqlen_k = 0
         slot_mapping = []
         block_tables = None
-        for seq in seqs:
-            start = seq.num_cached_tokens
-            seqlen_q = seq.num_scheduled_tokens
+        for request in requests:
+            start = request.num_computed_tokens
+            seqlen_q = request.num_scheduled_tokens
             end = start + seqlen_q
             seqlen_k = end
-            input_ids.extend(seq[start:end])
+            input_ids.extend(request[start:end])
             positions.extend(range(start, end))
             cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
             cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
             max_seqlen_q = max(seqlen_q, max_seqlen_q)
             max_seqlen_k = max(seqlen_k, max_seqlen_k)
-            if not seq.block_table:  # warmup
+            if not request.block_table:  # warmup
                 continue
             start_block = start // self.block_size
             end_block = (end + self.block_size - 1) // self.block_size
             for i in range(start_block, end_block):
-                slot_start = seq.block_table[i] * self.block_size
+                slot_start = request.block_table[i] * self.block_size
                 if i == start_block:
                     slot_start += start % self.block_size
                 if i != end_block - 1:
-                    slot_end = seq.block_table[i] * self.block_size + self.block_size
+                    slot_end = request.block_table[i] * self.block_size + self.block_size
                 else:
-                    slot_end = seq.block_table[i] * self.block_size + end - i * self.block_size
+                    slot_end = request.block_table[i] * self.block_size + end - i * self.block_size
                 slot_mapping.extend(range(slot_start, slot_end))
         if cu_seqlens_k[-1] > cu_seqlens_q[-1]:  # prefix cache
-            block_tables = self.prepare_block_tables(seqs)
+            block_tables = self.prepare_block_tables(requests)
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(
             non_blocking=True
         )
@@ -223,17 +226,17 @@ class ModelRunner:
         )
         return input_ids, positions
 
-    def prepare_decode(self, seqs: list[Sequence]):
+    def prepare_decode(self, requests: list[Request]):
         input_ids = []
         positions = []
         slot_mapping = []
         context_lens = []
-        for seq in seqs:
-            input_ids.append(seq.last_token)
-            positions.append(len(seq) - 1)
-            context_lens.append(len(seq))
+        for request in requests:
+            input_ids.append(request.last_token)
+            positions.append(len(request) - 1)
+            context_lens.append(len(request))
             slot_mapping.append(
-                seq.block_table[-1] * self.block_size + seq.last_block_num_tokens - 1
+                request.block_table[-1] * self.block_size + request.last_block_num_tokens - 1
             )
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(
             non_blocking=True
@@ -247,14 +250,14 @@ class ModelRunner:
         context_lens = torch.tensor(context_lens, dtype=torch.int32, pin_memory=True).cuda(
             non_blocking=True
         )
-        block_tables = self.prepare_block_tables(seqs)
+        block_tables = self.prepare_block_tables(requests)
         set_context(
             False, slot_mapping=slot_mapping, context_lens=context_lens, block_tables=block_tables
         )
         return input_ids, positions
 
-    def prepare_sample(self, seqs: list[Sequence]):
-        temperatures = [seq.temperature for seq in seqs]
+    def prepare_sample(self, requests: list[Request]):
+        temperatures = [request.temperature for request in requests]
         temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(
             non_blocking=True
         )
@@ -289,14 +292,14 @@ class ModelRunner:
             graph.replay()
             return self.model.compute_logits(graph_vars["outputs"][:bs])
 
-    def run(self, seqs: list[Sequence], is_prefill: bool, connector_meta=None) -> list[int]:
+    def run(self, requests: list[Request], is_prefill: bool, connector_meta=None) -> list[int]:
         input_ids, positions = (
-            self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
+            self.prepare_prefill(requests) if is_prefill else self.prepare_decode(requests)
         )
         if connector_meta is not None:
             self.connector.bind_connector_metadata(connector_meta)
             self.connector.start_load_kv(get_context())
-        temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
+        temperatures = self.prepare_sample(requests) if self.rank == 0 else None
         logits = self.run_model(input_ids, positions, is_prefill)
         token_ids = self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
         if connector_meta is not None:

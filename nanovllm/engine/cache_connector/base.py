@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from nanovllm.config import Config
-from nanovllm.engine.sequence import Sequence
+from nanovllm.engine.request import Request
 
 if TYPE_CHECKING:
     from nanovllm.engine.block_manager import BlockManager
@@ -125,7 +125,7 @@ class KVConnectorBase(ABC):
         return
 
     def get_num_new_matched_tokens(
-        self, request: Sequence, num_computed_tokens: int
+        self, request: Request, num_computed_tokens: int
     ) -> tuple[int | None, bool]:
         """
         Get number of new tokens that can be loaded from the
@@ -157,25 +157,27 @@ class KVConnectorBase(ABC):
         return 0, False
 
     def update_state_after_alloc(
-        self, request: Sequence, blocks: list[int], num_external_tokens: int
+        self, request: Request, blocks: list[int], num_external_tokens: int
     ) -> None:
         """Update connector state after the block manager allocates ``blocks``
         for ``num_external_tokens`` to be loaded into."""
         return
 
-    def build_connector_meta(self, seqs: list[Sequence], is_prefill: bool) -> KVConnectorMetadata:
+    def build_connector_meta(
+        self, requests: list[Request], is_prefill: bool
+    ) -> KVConnectorMetadata:
         """Build (and reset) this step's connector metadata for the worker.
 
-        nano-vllm has no ``SchedulerOutput``, so the scheduled ``seqs`` plus
+        nano-vllm has no ``SchedulerOutput``, so the scheduled ``requests`` plus
         ``is_prefill`` stand in for it here."""
         return KVConnectorMetadata()
 
-    def on_new_request(self, request: Sequence) -> None:
+    def on_new_request(self, request: Request) -> None:
         """Called when a new request is added, for connector bookkeeping."""
         return
 
     def request_finished(
-        self, request: Sequence, block_ids: list[int]
+        self, request: Request, block_ids: list[int]
     ) -> tuple[bool, dict[str, Any] | None]:
         """Called once when a request finishes, before its blocks are freed.
         Returns ``(defer_free, extra)`` -- ``True`` keeps the blocks for an async

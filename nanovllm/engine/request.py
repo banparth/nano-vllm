@@ -5,24 +5,24 @@ from itertools import count
 from nanovllm.sampling_params import SamplingParams
 
 
-class SequenceStatus(Enum):
+class RequestStatus(Enum):
     WAITING = auto()
     RUNNING = auto()
     FINISHED = auto()
 
 
-class Sequence:
+class Request:
     block_size = 256
     counter = count()
 
     def __init__(self, token_ids: list[int], sampling_params: SamplingParams = SamplingParams()):
-        self.seq_id = next(Sequence.counter)
-        self.status = SequenceStatus.WAITING
+        self.request_id = next(Request.counter)
+        self.status = RequestStatus.WAITING
         self.token_ids = copy(token_ids)
         self.last_token = token_ids[-1]
         self.num_tokens = len(self.token_ids)
         self.num_prompt_tokens = len(token_ids)
-        self.num_cached_tokens = 0
+        self.num_computed_tokens = 0
         self.num_scheduled_tokens = 0
         self.is_prefill = True
         self.block_table = []
@@ -38,10 +38,10 @@ class Sequence:
 
     @property
     def is_finished(self):
-        return self.status == SequenceStatus.FINISHED
+        return self.status == RequestStatus.FINISHED
 
     @property
-    def num_completion_tokens(self):
+    def num_output_tokens(self):
         return self.num_tokens - self.num_prompt_tokens
 
     @property
@@ -49,7 +49,7 @@ class Sequence:
         return self.token_ids[: self.num_prompt_tokens]
 
     @property
-    def completion_token_ids(self):
+    def output_token_ids(self):
         return self.token_ids[self.num_prompt_tokens :]
 
     @property
@@ -74,7 +74,7 @@ class Sequence:
         return (
             self.num_tokens,
             self.num_prompt_tokens,
-            self.num_cached_tokens,
+            self.num_computed_tokens,
             self.num_scheduled_tokens,
             self.block_table,
             last_state,
@@ -84,7 +84,7 @@ class Sequence:
         (
             self.num_tokens,
             self.num_prompt_tokens,
-            self.num_cached_tokens,
+            self.num_computed_tokens,
             self.num_scheduled_tokens,
             self.block_table,
             last_state,
