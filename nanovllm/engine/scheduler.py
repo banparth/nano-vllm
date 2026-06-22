@@ -3,6 +3,7 @@ from collections import deque
 from nanovllm.config import Config
 from nanovllm.engine.sequence import Sequence, SequenceStatus
 from nanovllm.engine.block_manager import BlockManager
+from nanovllm.engine.cache_connector.base import KVConnectorBase, KVConnectorRole
 
 
 class Scheduler:
@@ -13,6 +14,8 @@ class Scheduler:
         self.eos = config.eos
         self.block_size = config.kvcache_block_size
         self.block_manager = BlockManager(config.num_kvcache_blocks, config.kvcache_block_size)
+        self.connector = KVConnectorBase(config, KVConnectorRole.SCHEDULER)
+        self.connector.bind_gpu_block_pool(self.block_manager)
         self.waiting: deque[Sequence] = deque()
         self.running: deque[Sequence] = deque()
 
@@ -21,6 +24,9 @@ class Scheduler:
 
     def add(self, seq: Sequence):
         self.waiting.append(seq)
+
+    def build_connector_meta(self, seqs: list[Sequence], is_prefill: bool):
+        return self.connector.build_connector_meta(seqs, is_prefill)
 
     def schedule(self) -> tuple[list[Sequence], bool]:
         scheduled_seqs = []

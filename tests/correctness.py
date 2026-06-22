@@ -41,12 +41,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Allow `import benchmarks` when run as a script (python tests/correctness.py).
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, REPO_ROOT)
 
 import torch
 
@@ -196,14 +199,16 @@ def _generate(llm, prompts: list[str], mode: str, seed: int) -> ScenarioResult:
 
 
 def run_cell(spec, prompts: list[str], corr_cfg: dict[str, Any],
-             scenarios: list[str], mode: str, seed: int) -> dict[str, ScenarioResult]:
+             scenarios: list[str], mode: str, seed: int
+             ) -> tuple[dict[str, ScenarioResult], dict[str, str]]:
     results: dict[str, ScenarioResult] = {}
+    skipped: dict[str, str] = {}
     want = set(scenarios)
     if want & {"cold", "warm"}:
         try:
             llm = _build(spec, "cold", corr_cfg)
         except Exception as e:
-            print(f"    [skip] cold/warm build failed: {type(e).__name__}: {e}")
+            skipped["cold/warm"] = f"build failed: {type(e).__name__}: {e}"
         else:
             if "cold" in want:
                 results["cold"] = _generate(llm, prompts, mode, seed)
@@ -214,11 +219,53 @@ def run_cell(spec, prompts: list[str], corr_cfg: dict[str, Any],
         try:
             llm = _build(spec, "tight", corr_cfg)
         except Exception as e:
-            print(f"    [skip] tight build failed (KV too small for this model): {type(e).__name__}")
+            skipped["tight"] = f"build failed (KV too small for this model): {type(e).__name__}"
         else:
             results["tight"] = _generate(llm, prompts, mode, seed)
             destroy_llm(llm)
-    return results
+    return results, skipped
+
+
+# --------------------------------------------------------------------------- #
+# Subprocess-per-cell isolation (mirrors tests/oracle.py): build + generate run
+# in a fresh worker process so the dynamo compile cache, CUDA memory, and the
+# dist rendezvous port can't leak across cells. The parent only diffs the JSON
+# the worker returns.
+# --------------------------------------------------------------------------- #
+def _worker_cell(model_key: str, slice_name: str, config_name: str,
+                 scenarios: list[str], mode: str, seed: int, out_path: str) -> None:
+    install_test_sampler(mode)
+    results, skipped = run_cell(MODELS[model_key], PROMPT_SLICES[slice_name],
+                                CORR_CONFIGS[config_name], scenarios, mode, seed)
+    Path(out_path).write_text(json.dumps({"results": results, "skipped": skipped}))
+
+
+def run_cell_subprocess(model_key: str, slice_name: str, config_name: str,
+                        scenarios: list[str], mode: str, seed: int
+                        ) -> tuple[dict[str, ScenarioResult], dict[str, str]]:
+    fd, out_path = tempfile.mkstemp(suffix=".json", prefix="corr_cell_")
+    os.close(fd)
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--worker",
+             "--model", model_key, "--slice", slice_name, "--config", config_name,
+             "--scenarios", ",".join(scenarios), "--sampling", mode,
+             "--seed", str(seed), "--out", out_path],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=1800,
+        )
+        if proc.returncode != 0:
+            tail = " | ".join(proc.stderr.strip().splitlines()[-3:])
+            return {}, {"worker": f"crashed (rc={proc.returncode}): {tail}"}
+        try:
+            payload = json.loads(Path(out_path).read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}, {"worker": "produced no/invalid output"}
+        return payload.get("results", {}), payload.get("skipped", {})
+    except subprocess.TimeoutExpired:
+        return {}, {"worker": "timed out"}
+    finally:
+        if os.path.exists(out_path):
+            os.remove(out_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -318,12 +365,24 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--logprob-tol", type=float, default=DEFAULT_LOGPROB_TOL)
     ap.add_argument("--bless", action="store_true", help="write current outputs as the golden")
     ap.add_argument("--no-cross-check", action="store_true", help="skip cold==warm==tight checks")
+    # Internal: run a single cell inside a worker subprocess (see run_cell_subprocess).
+    ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--model", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--slice", dest="slice_name", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--config", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--scenarios", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--out", default=None, help=argparse.SUPPRESS)
     return ap.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    install_test_sampler(args.sampling)
+
+    if args.worker:
+        scenarios = [s.strip() for s in (args.scenarios or "").split(",") if s.strip()]
+        _worker_cell(args.model, args.slice_name, args.config, scenarios,
+                     args.sampling, args.seed, args.out)
+        return 0
 
     model_keys = resolve_keys(args.models) if args.models else available_keys()
     model_keys = [k for k in model_keys if MODELS[k].available]
@@ -340,13 +399,14 @@ def main() -> int:
     all_ok = True
     n_cells = 0
     for mkey in model_keys:
-        spec = MODELS[mkey]
         for slice_name in slices:
             prompts = PROMPT_SLICES[slice_name]
             for cfg_name in cfgs:
                 n_cells += 1
                 print(f"\n=== {mkey} | {slice_name} | {cfg_name} ===")
-                results = run_cell(spec, prompts, CORR_CONFIGS[cfg_name], scenarios, args.sampling, args.seed)
+                results, skipped = run_cell_subprocess(mkey, slice_name, cfg_name, scenarios, args.sampling, args.seed)
+                for sc, reason in skipped.items():
+                    print(f"    [skip] {sc}: {reason}")
                 if not results:
                     continue
                 path = cell_golden_path(mkey, slice_name, cfg_name)
